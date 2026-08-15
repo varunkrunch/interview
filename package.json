@@ -1,0 +1,48 @@
+{
+  "name": "interview-copilot",
+  "version": "0.1.0",
+  "description": "Personal live interview copilot (Parakeet-style) — system audio capture, real-time transcription, AI-generated answers, screen-share-invisible overlay.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "ELECTRON_OVERRIDE_DIST_PATH=/Applications/Electron.app/Contents/MacOS electron .",
+    "start:win": "electron .",
+    "backend": "cd backend && uvicorn main:app --host 127.0.0.1 --port 8765 --ws-max-size 20000000",
+    "build:backend:mac": "cd backend && venv/bin/pyinstaller --onefile --name backend --collect-all websockets --collect-all uvicorn --collect-all anthropic --collect-all google.genai --collect-all openai --collect-all ollama --collect-all pypdf main.py",
+    "build:backend:win": "cd backend && venv\\Scripts\\pyinstaller --onefile --name backend --collect-all websockets --collect-all uvicorn --collect-all anthropic --collect-all google.genai --collect-all openai --collect-all ollama --collect-all pypdf main.py",
+    "dist:mac": "npm run build:backend:mac && electron-builder --mac",
+    "dist:win": "npm run build:backend:win && electron-builder --win"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "com.personal.interviewcopilot",
+    "productName": "Interview Copilot",
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*", "!venv/**", "!__pycache__/**", "!.env", "!build/**", "!*.spec"]
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

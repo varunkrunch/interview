@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Interview Copilot - Browser Test</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #14141a; color: #eaeaea; padding: 20px; max-width: 600px; margin: 0 auto; }
+  h2 { font-size: 16px; }
+  #status-dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; margin-right: 8px; }
+  #status-dot.live { background: #3ecf6e; }
+  select, textarea, button { width: 100%; box-sizing: border-box; background: #1c1c22; color: #eaeaea; border: 1px solid #333; border-radius: 6px; padding: 8px; margin-top: 6px; font-size: 13px; }
+  button { background: #2a2a35; cursor: pointer; margin-top: 12px; }
+  button:hover { background: #35354a; }
+  label { font-size: 12px; color: #999; margin-top: 12px; display: block; }
+  #question { color: #9fb8ff; margin-top: 16px; font-size: 13px; }
+  #answer { white-space: pre-wrap; margin-top: 6px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h2><span id="status-dot"></span><span id="status-text">Idle</span> — Interview Copilot (browser test, not the real overlay)</h2>
+
+  <label>Audio input device — pick BlackHole 2ch (captures system/meeting audio)</label>
+  <select id="device-select"></select>
+
+  <label>Also capture this device (optional — e.g. your mic, so you can test by speaking)</label>
+  <select id="device-select-2">
+    <option value="">None</option>
+  </select>
+
+  <label>Resume (paste text)</label>
+  <textarea id="resume" rows="4"></textarea>
+
+  <label>Job description (paste text)</label>
+  <textarea id="jd" rows="4"></textarea>
+
+  <button id="btn-listen">Start Listening</button>
+  <button id="btn-get-answer" style="margin-top:6px;">Get Answer (manual)</button>
+
+  <div id="question"></div>
+  <div id="answer">Answers will appear here once you click Start and audio plays through BlackHole.</div>
+
+  <label style="margin-top:16px;">Debug log (raw messages from backend)</label>
+  <div id="debug-log" style="background:#0c0c10; border:1px solid #333; border-radius:6px; padding:8px; font-size:11px; font-family:monospace; height:150px; overflow-y:auto; white-space:pre-wrap;"></div>
+
+<script>
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const btnListen = document.getElementById('btn-listen');
+const btnGetAnswer = document.getElementById('btn-get-answer');
+const deviceSelect = document.getElementById('device-select');
+const deviceSelect2 = document.getElementById('device-select-2');
+const resumeBox = document.getElementById('resume');
+const jdBox = document.getElementById('jd');
+const questionEl = document.getElementById('question');
+const answerEl = document.getElementById('answer');
+const debugLog = document.getElementById('debug-log');
+
+function logDebug(msg) {
+  const time = new Date().toLocaleTimeString();
+  debugLog.textContent += `[${time}] ${msg}\n`;
+  debugLog.scrollTop = debugLog.scrollHeight;
+}
+
+const BACKEND_WS = 'ws://127.0.0.1:8765/ws/session';
+let ws = null, audioCtx = null, sourceNode = null, sourceNode2 = null, processorNode = null, mediaStream = null, mediaStream2 = null, listening = false;
+
+async function loadDevices() {
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach((t) => t.stop());
+  } catch (e) { console.warn('Mic permission needed', e); }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  deviceSelect.innerHTML = '';
+  deviceSelect2.innerHTML = '<option value="">None</option>';
+  devices.filter((d) => d.kind === 'audioinput').forEach((d) => {
+    const opt = document.createElement('option');
+    opt.value = d.deviceId;
+    opt.textContent = d.label || 'Input device';
+    deviceSelect.appendChild(opt);
+    deviceSelect2.appendChild(opt.cloneNode(true));
+  });
+}
+loadDevices();
+
+function floatTo16BitPCM(input, inRate, outRate) {
+  const ratio = inRate / outRate;
+  const outLength = Math.floor(input.length / ratio);
+  const out = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const s = Math.max(-1, Math.min(1, input[Math.floor(i * ratio)]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+// Simple client-side silence detection: OpenAI's transcription session has automatic
+// turn detection turned off (backend config), so we decide when the interviewer has
+// stopped talking and tell the backend to finalize that turn.
+const SILENCE_RMS_THRESHOLD = 0.01;
+const SILENCE_MS_BEFORE_COMMIT = 700;
+let hasSpeechSinceCommit = false;
+let lastSpeechTime = 0;
+
+function rms(float32arr) {
+  let sum = 0;
+  for (let i = 0; i < float32arr.length; i++) sum += float32arr[i] * float32arr[i];
+  return Math.sqrt(sum / float32arr.length);
+}
+
+async function startListening() {
+  const deviceId = deviceSelect.value;
+  const deviceId2 = deviceSelect2.value;
+  if (!deviceId) { setStatus('No device selected', false); return; }
+
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false },
+  });
+  audioCtx = new AudioContext();
+  sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+  processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  sourceNode.connect(processorNode);
+
+  // Optional second input (e.g. your mic) — connecting it to the same processor
+  // node mixes both sources together automatically, no extra code needed.
+  if (deviceId2) {
+    mediaStream2 = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: deviceId2 }, echoCancellation: false, noiseSuppression: false },
+    });
+    sourceNode2 = audioCtx.createMediaStreamSource(mediaStream2);
+    sourceNode2.connect(processorNode);
+    logDebug('Mixing in second input device (mic).');
+  }
+
+  ws = new WebSocket(BACKEND_WS);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'context', resume: resumeBox.value, jd: jdBox.value }));
+    setStatus('Listening', true);
+    logDebug('WebSocket connected, context sent.');
+  };
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    logDebug('Received: ' + event.data.slice(0, 200));
+    if (msg.type === 'transcript') questionEl.textContent = msg.text;
+    else if (msg.type === 'answer_chunk') answerEl.textContent += msg.text;
+    else if (msg.type === 'answer_start') answerEl.textContent = '';
+    else if (msg.type === 'error') answerEl.textContent = 'Error: ' + msg.message;
+  };
+  ws.onclose = () => { setStatus('Disconnected', false); logDebug('WebSocket closed.'); };
+  ws.onerror = () => { setStatus('Connection error', false); logDebug('WebSocket error.'); };
+
+  let lastLevelLog = 0;
+  processorNode.onaudioprocess = (e) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const pcm16 = floatTo16BitPCM(input, audioCtx.sampleRate, 24000);
+    ws.send(pcm16.buffer);
+
+    // Silence detection to trigger OpenAI's input_audio_buffer.commit
+    const level = rms(input);
+    const now = performance.now();
+    if (now - lastLevelLog > 1000) {
+      logDebug(`Audio level (RMS): ${level.toFixed(4)} ${level > SILENCE_RMS_THRESHOLD ? '(speech detected)' : '(quiet)'}`);
+      lastLevelLog = now;
+    }
+    if (level > SILENCE_RMS_THRESHOLD) {
+      hasSpeechSinceCommit = true;
+      lastSpeechTime = now;
+    } else if (hasSpeechSinceCommit && now - lastSpeechTime > SILENCE_MS_BEFORE_COMMIT) {
+      ws.send(JSON.stringify({ type: 'commit' }));
+      hasSpeechSinceCommit = false;
+    }
+  };
+  processorNode.connect(audioCtx.destination);
+  listening = true;
+  btnListen.textContent = 'Stop Listening';
+}
+
+function stopListening() {
+  if (processorNode) processorNode.disconnect();
+  if (sourceNode) sourceNode.disconnect();
+  if (sourceNode2) sourceNode2.disconnect();
+  if (audioCtx) audioCtx.close();
+  if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+  if (mediaStream2) mediaStream2.getTracks().forEach((t) => t.stop());
+  if (ws) ws.close();
+  listening = false;
+  btnListen.textContent = 'Start Listening';
+  setStatus('Idle', false);
+}
+
+function setStatus(text, live) {
+  statusText.textContent = text;
+  statusDot.classList.toggle('live', !!live);
+}
+
+btnListen.onclick = () => (listening ? stopListening() : startListening());
+
+btnGetAnswer.onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'manual_trigger' }));
+    logDebug('Sent manual_trigger.');
+  } else {
+    logDebug('Not connected — click Start Listening first.');
+  }
+};
+</script>
+</body>
+</html>

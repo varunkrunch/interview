@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  html, body {
+    margin: 0; padding: 0; background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+  #panel {
+    background: rgba(20, 20, 24, 0.92);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    color: #eaeaea;
+    height: 100vh;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; font-size: 12px; font-weight: 600;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+  }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; margin-right: 6px; display: inline-block; }
+  #status-dot.live { background: #3ecf6e; }
+  .no-drag { -webkit-app-region: no-drag; }
+  #controls { display: flex; gap: 6px; }
+  button {
+    background: rgba(255,255,255,0.08); border: none; color: #eaeaea;
+    border-radius: 5px; padding: 3px 7px; font-size: 11px; cursor: pointer;
+  }
+  button:hover { background: rgba(255,255,255,0.16); }
+  button.primary { background: #3b6fe0; }
+  button.primary:hover { background: #4c7bea; }
+  #main-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #caption {
+    color: #9fb8ff; font-size: 11px; padding: 8px 10px 4px 10px; min-height: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.05); flex-shrink: 0;
+  }
+  #chat-log { flex: 1; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.45; -webkit-app-region: no-drag; }
+  .chat-entry { margin-bottom: 14px; }
+  .chat-question { color: #9fb8ff; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .chat-answer { white-space: pre-wrap; }
+  .chat-placeholder { color: #777; font-size: 12px; }
+  #typebar {
+    display: flex; gap: 6px; padding: 8px 10px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+  }
+  #type-input {
+    flex: 1; background: #1c1c22; color: #eaeaea;
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+    padding: 5px 8px; font-size: 12px;
+  }
+  #type-input::placeholder { color: #666; }
+
+  /* ---- Settings page (full view, not a small panel) ---- */
+  #settings-view {
+    display: none; flex: 1; overflow-y: auto; padding: 16px 18px;
+    -webkit-app-region: no-drag; font-size: 12px;
+  }
+  #settings-view.open { display: block; }
+  #main-view.hidden { display: none; }
+  .settings-section {
+    margin-bottom: 18px; padding-bottom: 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+  .settings-section:last-child { border-bottom: none; }
+  .settings-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .settings-subtitle { font-size: 11px; color: #999; margin-bottom: 10px; }
+  label { font-size: 11px; color: #9a9a9a; display: block; margin-top: 8px; }
+  select, textarea, input[type=text] {
+    width: 100%; box-sizing: border-box; background: #1c1c22; color: #eaeaea;
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 8px;
+    font-size: 12px; margin-top: 4px; font-family: inherit;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .pdf-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .pdf-row input[type=file] { display: none; }
+  .file-label {
+    background: rgba(255,255,255,0.08); padding: 5px 10px; border-radius: 5px;
+    font-size: 11px; cursor: pointer; white-space: nowrap;
+  }
+  .file-label:hover { background: rgba(255,255,255,0.16); }
+  .file-status { font-size: 10px; color: #7fbf7f; }
+  .file-status.error { color: #e07f7f; }
+  #btn-save-settings { margin-top: 4px; width: 100%; padding: 8px; }
+</style>
+</head>
+<body>
+  <div id="panel">
+    <div id="topbar">
+      <div><span id="status-dot"></span><span id="status-text">Idle</span></div>
+      <div id="controls" class="no-drag">
+        <button id="btn-listen">Start</button>
+        <button id="btn-answer">Get Answer</button>
+        <button id="btn-screenshot">Read Screen</button>
+        <button id="btn-clear">Clear</button>
+        <button id="btn-settings">Settings</button>
+      </div>
+    </div>
+
+    <div id="main-view">
+      <div id="caption"></div>
+      <div id="chat-log">
+        <div class="chat-placeholder">Press Start, select your loopback/monitor audio device in Settings, then speak. Press Enter (or click "Get Answer") when you want the AI to respond — answers won't interrupt themselves while you're mid-question.</div>
+      </div>
+      <div id="typebar" class="no-drag">
+        <input id="type-input" type="text" placeholder="Type a question if audio didn't catch it..." />
+        <button id="btn-type-send">Ask</button>
+      </div>
+    </div>
+
+    <div id="settings-view">
+      <div class="settings-section">
+        <div class="settings-title">API Keys & Providers</div>
+        <div class="settings-subtitle">Get keys free: <a href="#" data-link="https://console.deepgram.com" style="color:#8fb8ff;">Deepgram</a>, <a href="#" data-link="https://aistudio.google.com/apikey" style="color:#8fb8ff;">Gemini</a>, <a href="#" data-link="https://console.groq.com" style="color:#8fb8ff;">Groq</a>. Leave a field blank to keep whatever's already saved.</div>
+        <div class="row">
+          <div>
+            <label>Transcription provider</label>
+            <select id="stt-provider">
+              <option value="deepgram">Deepgram</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+          <div>
+            <label>Answer provider</label>
+            <select id="llm-provider">
+              <option value="gemini">Gemini</option>
+              <option value="groq">Groq</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+        </div>
+        <label>Deepgram API key <span id="status-deepgram" class="file-status"></span></label>
+        <input type="text" id="deepgram-key" placeholder="Leave blank to keep existing" />
+        <label>Gemini API key <span id="status-gemini" class="file-status"></span></label>
+        <input type="text" id="gemini-key" placeholder="Leave blank to keep existing" />
+        <label>Groq API key <span id="status-groq" class="file-status"></span></label>
+        <input type="text" id="groq-key" placeholder="Leave blank to keep existing" />
+        <label>OpenAI API key <span id="status-openai" class="file-status"></span></label>
+        <input type="text" id="openai-key" placeholder="Leave blank to keep existing" />
+        <label>Anthropic API key <span id="status-anthropic" class="file-status"></span></label>
+        <input type="text" id="anthropic-key" placeholder="Leave blank to keep existing" />
+        <button id="btn-save-keys" style="margin-top:8px;">Save Keys & Restart Backend</button>
+        <div id="keys-status" class="file-status" style="margin-top:4px;"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Audio</div>
+        <div class="settings-subtitle" style="display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="use-system-audio" checked style="margin:0;" />
+          <label for="use-system-audio" style="margin:0; color:#eaeaea; font-size:12px;">Use built-in system audio (no driver needed — macOS 13+ / Windows 10+)</label>
+        </div>
+        <div class="settings-subtitle" style="margin-top:8px;">If unchecked, or if built-in capture isn't available on your OS version, use a manual input device instead (needs a one-time driver install).</div>
+        <div class="pdf-row">
+          <button id="btn-download-blackhole" class="file-label" style="cursor:pointer;">Download BlackHole (Mac)</button>
+          <button id="btn-download-vbcable" class="file-label" style="cursor:pointer;">Download VB-CABLE (Windows)</button>
+        </div>
+        <label style="margin-top:10px;">Manual input device (only used if the checkbox above is off)</label>
+        <select id="device-select"></select>
+        <label>Also capture this device (optional — e.g. your mic, so you can test by speaking)</label>
+        <select id="device-select-2"><option value="">None</option></select>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Resume</div>
+        <div class="settings-subtitle">Upload a PDF or paste text directly — this grounds every answer in your real background.</div>
+        <div class="pdf-row">
+          <label class="file-label" for="resume-pdf">Upload PDF</label>
+          <input type="file" id="resume-pdf" accept="application/pdf" />
+          <span id="pdf-status" class="file-status"></span>
+        </div>
+        <textarea id="resume" rows="5" placeholder="Paste resume text, or upload a PDF above"></textarea>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Job description</div>
+        <textarea id="jd" rows="4" placeholder="Paste the job description here"></textarea>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">About you</div>
+        <div class="settings-subtitle">Anything relevant not in your resume — side projects, specific achievements, things you want it to know.</div>
+        <textarea id="extra-knowledge" rows="4" placeholder="e.g. Built a hospital management system solo, comfortable with FastAPI and React, led a 4-person team on..."></textarea>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Experience & target role</div>
+        <div class="settings-subtitle">Keeps answers honest about seniority and relevant to the specific field — instead of generic answers.</div>
+        <div class="row">
+          <div>
+            <label>Experience level</label>
+            <select id="experience-level">
+              <option value="fresher">Fresher / recent grad</option>
+              <option value="junior">Junior (1-3 yrs)</option>
+              <option value="mid">Mid-level (3-6 yrs)</option>
+              <option value="senior">Senior (6+ yrs)</option>
+            </select>
+          </div>
+          <div>
+            <label>Target role / field</label>
+            <input type="text" id="target-role" placeholder="e.g. Frontend Developer, Data Analyst" />
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">How it should answer</div>
+        <div class="row">
+          <div>
+            <label>Answer length</label>
+            <select id="answer-length">
+              <option value="concise">Concise</option>
+              <option value="balanced">Balanced</option>
+              <option value="detailed">Detailed</option>
+            </select>
+          </div>
+          <div>
+            <label>Tone</label>
+            <select id="answer-tone">
+              <option value="professional">Professional</option>
+              <option value="casual">Casual</option>
+              <option value="confident">Confident</option>
+            </select>
+          </div>
+        </div>
+        <label>Custom instructions (optional)</label>
+        <textarea id="custom-instructions" rows="2" placeholder="e.g. Always mention my FastAPI experience when relevant"></textarea>
+      </div>
+
+      <button id="btn-save-settings" class="primary">Save Settings</button>
+    </div>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>
